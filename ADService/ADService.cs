@@ -182,7 +182,7 @@ namespace ADService
 
                     UInt64 n = 0; 
                     IntPtr ptr = new IntPtr((int)n);
-                    SetFilePointerEx((IntPtr)fHandler, 0, IntPtr.Zero, 0); //FILE_BEGIN = 0
+                    SetFilePointerEx((IntPtr)fHandler, -buff.Length, IntPtr.Zero, 1); //FILE_BEGIN = 0, FILE_POSITION = 1
 
                     var natOverlap3 = new NativeOverlapped { OffsetLow = (int)0 };
                     WriteFile((IntPtr)fHandler, buff, 2048, out buffWritten, ref natOverlap3);

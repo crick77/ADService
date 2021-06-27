@@ -10,12 +10,14 @@ using System.Text;
 using System.Threading.Tasks;
 using System.IO;
 using callback.CBFSFilter;
+using System.Threading;
 
 namespace ADService
 {
     public partial class ADService : ServiceBase
     {
         private Cbfilter mFilter = null;
+        private const uint ERROR_ACCESS_DENIED = 5;
         private const uint ERROR_PRIVILEGE_NOT_HELD = 1314;
         private const uint FILE_ATTRIBUTE_DIRECTORY = 16;
         private string mGuid = "{713CC6CE-B3E2-4FD9-838D-E28F558F6866}";
@@ -35,6 +37,13 @@ namespace ADService
         static extern bool GetFileSizeEx(IntPtr hFile, out long lpFileSize);
         [DllImport("kernel32.dll")]
         static extern bool CloseHandle(IntPtr hFile);
+        [DllImport("kernel32.dll", BestFitMapping = true, CharSet = CharSet.Ansi, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool ReadFile(IntPtr hFile, byte[] lpbuffer, UInt32 nNumberofBytesToRead, out UInt32 lpNumberofBytesRead, IntPtr lpOverlapped);
+        [DllImport("kernel32.dll")]
+        static extern bool WriteFile(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite, out uint lpNumberOfBytesWritten, [In] ref System.Threading.NativeOverlapped lpOverlapped);
+        [DllImport("kernel32.dll")]
+        static extern bool SetFilePointerEx(IntPtr hFile, long liDistanceToMove, IntPtr lpNewFilePointer, uint dwMoveMethod);
 
         public ADService()
         {
@@ -76,30 +85,39 @@ namespace ADService
                 driveStatus = string.Format("Driver version: {0}.{1}.{2}.{3}",
                   versionHigh >> 16, versionHigh & 0xFFFF, versionLow >> 16, versionLow & 0xFFFF);
             }
+            else
+            {
+                Console.WriteLine("Driver not installed!");
+                throw new Exception();
+            }
 
-            mFilter.OnAfterOpenFile += onAfterOpenFile;
-            mFilter.OnBeforeOpenFile += onBeforeOpenFile;
+            //mFilter.OnAfterOpenFile += onAfterOpenFile;
+            //mFilter.OnBeforeOpenFile += onBeforeOpenFile;
+            mFilter.OnBeforeReadFile += onBeforeReadFile;
             mFilter.OnBeforeRenameOrMoveFile += onBeforeRenameOrMoveFile;
             //long fFs = Constants.FS_CE_AFTER_OPEN | Constants.FS_CE_BEFORE_OPEN | Constants.FS_CE_BEFORE_RENAME;
-            long fFs = Constants.FS_CE_BEFORE_RENAME | Constants.FS_CE_BEFORE_OPEN;
+            //long fFs = Constants.FS_CE_BEFORE_RENAME | Constants.FS_CE_BEFORE_OPEN;
+            long fFs = Constants.FS_CE_BEFORE_RENAME | Constants.FS_CE_BEFORE_READ;
             mFilter.AddFilterRule("*.activedata", 0, fFs, Constants.FS_NE_ALL);
 
             mFilter.Initialize(mGuid);
-            mFilter.ProcessFailedRequests = true;
+            //mFilter.ProcessFailedRequests = true;
             mFilter.ProcessCachedIORequests = true;
             mFilter.Config("AllowFileAccessInBeforeOpen=false;ModifiableReadWriteBuffers=true");
             mFilter.StartFilter(5000);
             mFilter.FileFlushingBehavior = 0;
             evLog.WriteEntry("Service started. "+driveStatus);
-            Console.WriteLine("Service started. " + driveStatus);
+            Console.WriteLine("Service started. " + driveStatus + " Active:"+mFilter.Active);
         }
 
         protected override void OnStop()
         {
             try
             {
-                mFilter.StopFilter(false);
+                mFilter.StopFilter(true);
+                mFilter.Dispose();
                 //evLog.WriteEntry("Service stopped.");
+                Console.WriteLine("Service stopped.");
                 evLog.Dispose();
             }
             catch (CBFSFilterException err)
@@ -108,7 +126,6 @@ namespace ADService
                 evLog.WriteEntry("Stop: " + err.Message);
             }
         }
-
         protected override void OnShutdown()
         {
             //this.CanStop = true;
@@ -126,70 +143,7 @@ namespace ADService
             OnStop();
         }
 #endif
-        private void onBeforeOpenFile(object Sender, CbfilterBeforeOpenFileEventArgs e)
-        {
-            string process = mFilter.GetOriginatorProcessName().ToUpper();
-            string fname = e.FileName.ToUpper();
-
-            //Console.WriteLine("BeforeRead: {0} by process {1}. RD:{2,5}, RA:{3,5}, RC:{4,5}, SY:{5,5}, DA:{6}, OPT:{7}, SM:{8}", fname, process, isGenericRead(e.DesiredAccess), isReadAttributes(e.DesiredAccess), isReadControl(e.DesiredAccess), isSynchronize(e.DesiredAccess), Convert.ToString(e.DesiredAccess, 2).PadLeft(32, '0'), Convert.ToString(e.Options, 2).PadLeft(32, '0'), Convert.ToString(e.ShareMode, 2).PadLeft(32, '0'));
-            Console.WriteLine("BeforeRead: {0} by process {1}. RD:{2,5}, RA:{3,5}, RC:{4,5}, SY:{5,5}", fname, process, isReadData(e.DesiredAccess), isReadAttributes(e.DesiredAccess), isReadControl(e.DesiredAccess), isSynchronize(e.DesiredAccess));
-
-            // Access to file system alternate streams is always allowed
-            if (fname.EndsWith(":ZONE.IDENTIFIER")) return;
-
-            // Reading of attributes, sync or control is always allowed
-            if (!isReadData(e.DesiredAccess) && (isReadControl(e.DesiredAccess) || isReadAttributes(e.DesiredAccess) || isSynchronize(e.DesiredAccess))) {
-                return;
-            }
-
-            long fsize = 0;
-            try
-            {
-                long fHandler = mFilter.CreateFileDirect(fname, false, 0, 3, 128, false);
-                bool result = GetFileSizeEx((IntPtr)fHandler, out fsize);
-                if (result)
-                {
-                    //Console.WriteLine("File size is: " + fsize);
-                    result = CloseHandle((IntPtr)fHandler);
-                    if (!result)
-                    {
-                        Console.WriteLine("cannot close file");
-                    }
-                }
-            }
-            catch(CBFSFilterCbfilterException ex)
-            {
-                Console.WriteLine("BeforeOpen: file "+fname+" exception "+ex);
-                return;
-            }
-
-            // file is being to be read, only notepad allowed
-            e.ResultCode = process.Contains("NOTEPAD.EXE") ? 0 : (int)ERROR_PRIVILEGE_NOT_HELD;
-            e.ProcessRequest = (e.ResultCode == 0);
-            Console.WriteLine("Exiting with PR: {0} and RC: {1}.", e.ProcessRequest, e.ResultCode);
-        }
-        private void onAfterOpenFile(object Sender, CbfilterAfterOpenFileEventArgs e)
-        {
-            string fname = e.FileName;
-            // Access to file system alternate streams is allowed
-            if (e.FileName.ToUpper().EndsWith(":ZONE.IDENTIFIER"))
-            {
-                return;
-            }
-
-            long fsize = new FileInfo(fname).Length;
-            if (fsize >= 1024)
-            {
-                byte[] bytes = new byte[1024];
-                using (var stream = File.OpenRead(fname))
-                {
-                    int count = stream.Read(bytes, 0, 1024);
-                    Console.WriteLine("AfterOpen: " + fname + " - read 1k. Process: "+ mFilter.GetOriginatorProcessName());
-                    e.ResultCode = (int)5;
-                }
-            }
-        }
-
+        
         private void onBeforeRenameOrMoveFile(object Sender, CbfilterBeforeRenameOrMoveFileEventArgs e)
         {
             Console.WriteLine("BeforeRename: trying to rename " + e.FileName + " to " + e.NewFileName);
@@ -203,6 +157,66 @@ namespace ADService
                 e.ProcessRequest = false;
                 Console.WriteLine("Negated!");
             }
+        }
+
+        private void onBeforeReadFile(object Sender, CbfilterBeforeReadFileEventArgs e)
+        {
+            string process = mFilter.GetOriginatorProcessName().ToUpper();
+            string fname = e.FileName.ToUpper();
+
+            Console.WriteLine("BeforeRead: {0} by process {1}, Direction {2}, ReadStart {3}, ReadLen {4}, BuffLen {5}", fname, process, e.Direction, e.Position, e.BytesToRead, e.BufferLength);
+
+            long fsize = 0;
+            try
+            {
+                long fHandler = mFilter.CreateFileDirect(fname, false, 0, 3, 128, false);
+                bool result = GetFileSizeEx((IntPtr)fHandler, out fsize);
+                if (result)
+                {
+                    byte[] buff = new byte[2048];
+                    uint buffRead, buffWritten;
+                    ReadFile((IntPtr)fHandler, buff, 2048, out buffRead, IntPtr.Zero);
+
+                    buff[1] = Encoding.ASCII.GetBytes("RI")[0];
+                    buff[2] = Encoding.ASCII.GetBytes("RI")[1];
+
+                    UInt64 n = 0; 
+                    IntPtr ptr = new IntPtr((int)n);
+                    SetFilePointerEx((IntPtr)fHandler, 0, IntPtr.Zero, 0); //FILE_BEGIN = 0
+
+                    var natOverlap3 = new NativeOverlapped { OffsetLow = (int)0 };
+                    WriteFile((IntPtr)fHandler, buff, 2048, out buffWritten, ref natOverlap3);
+
+                    //Console.WriteLine("File size is: " + fsize);
+                    result = CloseHandle((IntPtr)fHandler);
+                    if (!result)
+                    {
+                        Console.WriteLine("cannot close file");
+                    }
+                }
+            }
+            catch (CBFSFilterCbfilterException ex)
+            {
+                Console.WriteLine("BeforeRead: file " + fname + " exception " + ex);
+                return;
+            }
+
+            if(fsize>e.BytesToRead)
+            {
+                Console.WriteLine("Invalid request, app shoud read whole file. File size is {0} requested {1}.",fsize, e.BytesToRead);
+                e.ResultCode = (int)ERROR_ACCESS_DENIED;
+                e.ProcessRequest = false;
+                return;
+            }
+
+            // file is being to be read, only notepad allowed
+            e.ResultCode = process.Contains("ADEDITOR.EXE") ? 0 : (int)ERROR_ACCESS_DENIED;
+            if(e.ResultCode==0)
+            {
+                Console.WriteLine("ADEditor: read allowed!");
+            }
+            e.ProcessRequest = (e.ResultCode == 0);
+            Console.WriteLine("BeforeRead: Exiting with PR: {0} and RC: {1}.", e.ProcessRequest, e.ResultCode);
         }
 
         private bool isReadControl(int flag)

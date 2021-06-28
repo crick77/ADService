@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.IO;
 using callback.CBFSFilter;
 using System.Threading;
+using adEditor;
 
 namespace ADService
 {
@@ -169,31 +170,67 @@ namespace ADService
             long fsize = 0;
             try
             {
+                // Open the file bypassing filter stack...directly to kernel
                 long fHandler = mFilter.CreateFileDirect(fname, false, 0, 3, 128, false);
-                bool result = GetFileSizeEx((IntPtr)fHandler, out fsize);
-                if (result)
+                if (fHandler == 0)
                 {
-                    byte[] buff = new byte[2048];
-                    uint buffRead, buffWritten;
-                    ReadFile((IntPtr)fHandler, buff, 2048, out buffRead, IntPtr.Zero);
-
-                    buff[1] = Encoding.ASCII.GetBytes("RI")[0];
-                    buff[2] = Encoding.ASCII.GetBytes("RI")[1];
-
-                    UInt64 n = 0; 
-                    IntPtr ptr = new IntPtr((int)n);
-                    SetFilePointerEx((IntPtr)fHandler, -buff.Length, IntPtr.Zero, 1); //FILE_BEGIN = 0, FILE_POSITION = 1
-
-                    var natOverlap3 = new NativeOverlapped { OffsetLow = (int)0 };
-                    WriteFile((IntPtr)fHandler, buff, 2048, out buffWritten, ref natOverlap3);
-
-                    //Console.WriteLine("File size is: " + fsize);
-                    result = CloseHandle((IntPtr)fHandler);
-                    if (!result)
-                    {
-                        Console.WriteLine("cannot close file");
-                    }
+                    e.ProcessRequest = false;
+                    e.ResultCode = 6; // ERROR_INVALID_HANDLE
+                    return;
                 }
+
+                // Get the size of the file and check if the file is at least 2048 bytes long
+                bool result = GetFileSizeEx((IntPtr)fHandler, out fsize);
+                if (!result || fsize < 2048)
+                {
+                    CloseHandle((IntPtr)fHandler);
+                    e.ProcessRequest = false;
+                    e.ResultCode = (fsize < 2048) ? 11 : 6; // 11=ERROR_BAD_FORMAT
+                    return;
+                }
+
+                // Read the first 2048 bytes and them map them to header format
+                byte[] buff = new byte[2048];
+                uint buffRead, buffWritten;
+                ReadFile((IntPtr)fHandler, buff, 2048, out buffRead, IntPtr.Zero);
+                int bSize = Marshal.SizeOf(new ActiveDataFile());
+                byte[] adBuff = new byte[bSize];
+                for (int i = 0; i < adBuff.Length; ++i) adBuff[i] = buff[i];
+                ActiveDataFile adf = ByteArrayToActiveData(adBuff);
+
+                // check if the file is an activedata "magic word"
+                if (baToStringNull(adf.magic) != "*AD*")
+                {
+                    CloseHandle((IntPtr)fHandler);
+                    e.ProcessRequest = false;
+                    e.ResultCode = 11; // 11=ERROR_BAD_FORMAT
+                    return;
+                }
+
+                // Determine what operation is beeing done (Open with ADEDITOR or ATTACHMENT)
+                //if(isEditor()) {
+                //   perform "OnRead" operation but, before executing operation
+                //   check if counter/date have expired
+                //   if ok, perform operation, recompute hash and save file
+                //}
+                //if(isShare()) {
+                //  perform "OnShare" operation but, before executing operation
+                //  check if counter/date have expired
+                //  if ok, perform operation, recompute hash and save file
+                //}
+                UInt64 n = 0; 
+                IntPtr ptr = new IntPtr((int)n);
+                SetFilePointerEx((IntPtr)fHandler, -buff.Length, IntPtr.Zero, 1); //FILE_BEGIN = 0, FILE_POSITION = 1
+
+                var natOverlap3 = new NativeOverlapped { OffsetLow = (int)0 };
+                WriteFile((IntPtr)fHandler, buff, 2048, out buffWritten, ref natOverlap3);
+
+                //Console.WriteLine("File size is: " + fsize);
+                result = CloseHandle((IntPtr)fHandler);
+                if (!result)
+                {
+                    Console.WriteLine("cannot close file");
+                }                
             }
             catch (CBFSFilterCbfilterException ex)
             {
@@ -237,6 +274,25 @@ namespace ADService
         private bool isReadData(int flag)
         {
             return (flag & FILE_READ_DATA) == FILE_READ_DATA;
+        }
+
+        private string baToStringNull(byte[] b)
+        {
+            return Encoding.UTF8.GetString(b).Replace('\0', ' ').Trim();
+        }
+
+        private ActiveDataFile ByteArrayToActiveData(byte[] bytes)
+        {
+            GCHandle handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+            try
+            {
+                ActiveDataFile stuff = (ActiveDataFile)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(ActiveDataFile));
+                return stuff;
+            }
+            finally
+            {
+                handle.Free();
+            }
         }
     }
 }

@@ -89,6 +89,9 @@ namespace adEditor
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
         public byte[] magic2;
 
+        [MarshalAs(UnmanagedType.U4)]
+        public uint openCount;
+
         [MarshalAs(UnmanagedType.U2)]
         public short dataCount;
     }
@@ -101,6 +104,9 @@ namespace adEditor
 
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
         public byte[] extension;
+
+        [MarshalAs(UnmanagedType.U4)]
+        public uint flag;
 
         [MarshalAs(UnmanagedType.U4)]
         public uint fieldSize;

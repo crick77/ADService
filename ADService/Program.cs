@@ -20,7 +20,7 @@ namespace ADService
 #if NOSERVICE
             ADService s = new ADService();
             s._onStart(null);
-            MessageBox.Show("Press ok to stop");
+            MessageBox.Show("Press ok to stop", "adService");
             s._onStop();
 #else
             ServiceBase[] ServicesToRun;

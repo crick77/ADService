@@ -73,6 +73,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ActiveDataFileFormat.cs" />
+    <Compile Include="Extensions.cs" />
     <Compile Include="PlatformMail.cs" />
     <Compile Include="ProjectInstaller.cs">
       <SubType>Component</SubType>

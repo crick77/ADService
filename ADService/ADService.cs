@@ -16,28 +16,24 @@ namespace ADService
     public partial class ADService : ServiceBase
     {
         // Filter object and GUID
-        private Cbfilter mFilter = new Cbfilter();        
-        private string mGuid = "{713CC6CE-B3E2-4FD9-838D-E28F558F6866}";
+        private readonly Cbfilter mFilter = new Cbfilter();        
+        private const string mGuid = "{713CC6CE-B3E2-4FD9-838D-E28F558F6866}";
         // Logging event viewer parameters
-        private EventLog evLog = new EventLog();
-        private static string SERVICE_NAME = "ADService";
-        private static string SERVICE_LOG = "Application";
-        // Already processed list file
-        private List<string> alreadyProcessed = new List<string>();
+        private readonly EventLog evLog = new EventLog();
+        private const string SERVICE_NAME = "ADService";
+        private const string SERVICE_LOG = "Application";
         // SHA1 hashing object
-        private SHA1Managed sha1 = new SHA1Managed();
+        private readonly SHA1Managed sha1 = new SHA1Managed();
         // Error codes
         private const int ERROR_ACCESS_DENIED = 5;
         private const int ERROR_INVALID_HANDLE = 6;
         private const int ERROR_BAD_FORMAT = 11;
         private const uint ERROR_PRIVILEGE_NOT_HELD = 1314;
-        private const uint ERROR_AD_EXIRED = 0xA007052E;                
+        private const uint ERROR_AD_EXPIRED = 0xA007052E;                
         // Useful constants        
-        private static string ACTIVEDATA_EXTENSION = ".ACTIVEDATA";
-        private static string ADLIST_EXTENSION = ".ADLIST";
-        private static string ADLIST_FILE = "c:/processed" + ADLIST_EXTENSION;
-        private static string ADEDITOR_HASH = "ED9F98C07054E9EB8FD7E3BE9CCB22868A33F1FF";
-        // File access constants (winapi CreateFileA/W)
+        private const string ACTIVEDATA_EXTENSION = ".ACTIVEDATA";
+        private const string ADEDITOR_HASH = "ED9F98C07054E9EB8FD7E3BE9CCB22868A33F1FF";
+        // File access constants (fileapi.h CreateFileA/W)
         private const int DELETE = 0x00010000;
         private const int READ_CONTROL = 0x00020000;
         private const int WRITE_DAC = 0x00040000;
@@ -47,9 +43,36 @@ namespace ADService
         private const int FILE_READ_EA = 0x00000008;
         private const int FILE_READ_DATA = 0x00000001;
         private const int FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+        private const int FILE_WRITE_DATA = 0x00000002;
+        // dwCreationDisposition (fileapi.h CreateFileA/W)
+        private const int CREATE_NEW = 1;
+        private const int CREATE_ALWAYS = 2;
+        private const int OPEN_EXISTING = 3;
+        private const int OPEN_ALWAYS = 4;
+        private const int TRUNCATE_EXISTING = 5;
+        // dwFlagsAndAttributes (fileapi.h CreateFileA/W)
+        private const uint FILE_ATTRIBUTE_ARCHIVE = 0x20;
+        private const uint FILE_ATTRIBUTE_ENCRYPTED = 0x4000;
+        private const uint FILE_ATTRIBUTE_HIDDEN = 0x2;
+        private const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+        private const uint FILE_ATTRIBUTE_OFFLINE = 0x1000;
+        private const uint FILE_ATTRIBUTE_READONLY = 0x1;
+        private const uint FILE_ATTRIBUTE_SYSTEM = 0x4;
+        private const uint FILE_ATTRIBUTE_TEMPORARY = 0x100;
+        private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+        private const uint FILE_FLAG_DELETE_ON_CLOSE = 0x04000000;
+        private const uint FILE_FLAG_NO_BUFFERING = 0x20000000;
+        private const uint FILE_FLAG_OPEN_NO_RECALL = 0x00100000;
+        private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+        private const uint FILE_FLAG_OVERLAPPED = 0x40000000;
+        private const uint FILE_FLAG_POSIX_SEMANTICS = 0x01000000;
+        private const uint FILE_FLAG_RANDOM_ACCESS = 0x10000000;
+        private const uint FILE_FLAG_SESSION_AWARE = 0x00800000;
+        private const uint FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000;
+        private const uint FILE_FLAG_WRITE_THROUGH = 0x80000000;
 
         // Kernel api import
-        [DllImport("kernel32.dll")]
+/*        [DllImport("kernel32.dll")]
         static extern bool GetFileSizeEx(IntPtr hFile, out long lpFileSize);
         [DllImport("kernel32.dll")]
         static extern bool CloseHandle(IntPtr hFile);
@@ -60,18 +83,18 @@ namespace ADService
         static extern bool WriteFile(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite, out uint lpNumberOfBytesWritten, [In] ref System.Threading.NativeOverlapped lpOverlapped);
         [DllImport("kernel32.dll")]
         static extern bool SetFilePointerEx(IntPtr hFile, long liDistanceToMove, IntPtr lpNewFilePointer, uint dwMoveMethod);
+*/
 
+        /*
+         * Constructor
+         */
         public ADService()
         {
             InitializeComponent();
 
             ((ISupportInitialize)(this.EventLog)).BeginInit();
             if (!EventLog.SourceExists(SERVICE_NAME))
-            {
-                //An event log source should not be created and immediately used.
-                //There is a latency time to enable the source, it should be created
-                //prior to executing the application that uses the source.
-                //Execute this sample a second time to use the new source.
+            {                
                 EventLog.CreateEventSource(SERVICE_NAME, SERVICE_LOG);
             }
             ((ISupportInitialize)(this.EventLog)).EndInit();
@@ -81,6 +104,9 @@ namespace ADService
             evLog.Log = SERVICE_LOG;
         }
 
+        /*
+         * Called when the service is being started
+         */
         protected override void OnStart(string[] args)
         {
             //this.CanStop = false;
@@ -106,51 +132,49 @@ namespace ADService
                 throw new Exception();
             }
 
+            // Rename and Read are applied only to activedata
+            long fsFlags = Constants.FS_CE_BEFORE_RENAME | Constants.FS_CE_BEFORE_READ;
             mFilter.OnBeforeReadFile += OnBeforeReadFile;
             mFilter.OnBeforeRenameOrMoveFile += OnBeforeRenameOrMoveFile;
-            //mFilter.OnBeforeWriteFile += OnBeforeWriteFile;
-            //mFilter.OnAfterWriteFile += OnAfterWriteFile;
-            //mFilter.OnAfterCloseFile += OnAfterCloseFile;
-            mFilter.OnNotifyCloseFile += OnNotifyCloseFile;
-            long adFS = Constants.FS_CE_BEFORE_RENAME | Constants.FS_CE_BEFORE_READ;
-            //long genericFS = Constants.FS_CE_BEFORE_WRITE;
-            //long genericFS = Constants.FS_CE_AFTER_WRITE | Constants.FS_CE_AFTER_CLOSE;
-            long closeFS = Constants.FS_NE_CLOSE;
-            mFilter.AddFilterRule("*" + ACTIVEDATA_EXTENSION, Constants.ACCESS_NONE, adFS, Constants.FS_NE_NONE);
-            mFilter.AddFilterRule("*" + ADLIST_EXTENSION, Constants.ACCESS_NONE, adFS, Constants.FS_NE_NONE);
-            mFilter.AddFilterRule("*.*", Constants.ACCESS_NONE, Constants.FS_CE_NONE, closeFS);
+            mFilter.AddFilterRule("*" + ACTIVEDATA_EXTENSION, Constants.ACCESS_NONE, fsFlags, Constants.FS_NE_NONE);            
 
             mFilter.Initialize(mGuid);
             mFilter.ProcessCachedIORequests = true;
-            //mFilter.Config("AllowFileAccessInBeforeOpen=false;ModifiableReadWriteBuffers=true");
+            mFilter.ProcessFailedRequests = false;
             mFilter.Config("AllowFileAccessInBeforeOpen=false");
             mFilter.StartFilter(5000);
             mFilter.FileFlushingBehavior = 0;
 
-            loadProcessedFile();
-
             evLog.WriteEntry("Service started. " + driveStatus + " Active:" + mFilter.Active);
-            Console.WriteLine("Service started. " + driveStatus + " Active:" + mFilter.Active);
+            Console.WriteLine("Service started. " + driveStatus + " Active:" + mFilter.Active);           
         }
 
+        /*
+         * Called when the service is being stopped
+         */
         protected override void OnStop()
         {
             try
             {
+                // stop the filter and dispose it
                 mFilter.StopFilter(false);
                 mFilter.Dispose();
-                updateProcessedFile();
+                
                 Console.WriteLine("ADService: Service stopped.");
-                evLog.WriteEntry("ADService: Service stopped.");                
-                evLog.Dispose();
+                evLog.WriteEntry("ADService: Service stopped.");                                
             }
             catch (CBFSFilterException err)
             {
                 Console.WriteLine("ADService: Stop error: " + err.Message);
                 evLog.WriteEntry("ADService: Stop error: " + err.Message);
             }
+            // dispose log
+            evLog.Dispose();
         }
 
+        /*
+         * Called when the service is being stopped during system shutdown
+         */
         protected override void OnShutdown()
         {
             Console.WriteLine("ADService: System shutdown, stopping.");
@@ -160,36 +184,23 @@ namespace ADService
         }
 
 #if NOSERVICE
+        /*
+         * Compiled only with NOSERVICE flag enabled, used for debug
+         */
         public void _onStart(string[] args)
         {
             OnStart(args);
         }
 
+        /*
+         * Compiled only with NOSERVICE flag enabled, used for debug
+         */
         public void _onStop()
         {
             OnStop();
         }
 #endif
-
-        /*
-         * The BeforeOpen event is only applied to .ADLIST file where the service records all the
-         * already processed files. The opening, renaming and moving of this file is forbidden.
-         * 
-         * */
-        public void OnBeforeOpenFile(object sender, CbfilterBeforeOpenFileEventArgs e)
-        {
-            string process = mFilter.GetOriginatorProcessName().ToUpper();
-            string fname = e.FileName.ToUpper();
-
-            if (isAdListFile(fname))
-            {
-                Console.WriteLine("Process " + process + " tried to open adlist file. Request blocked.");
-                evLog.WriteEntry("Process " + process + " tried to open adlist file. Request blocked.");
-                e.ProcessRequest = false;
-                e.ResultCode = ERROR_ACCESS_DENIED;
-            }
-        }
-
+       
         /*
          * Handle the process of renaming file.
          * 
@@ -203,17 +214,6 @@ namespace ADService
             string fname = e.FileName.ToUpper();
             string newfname = e.NewFileName.ToUpper();
             string process = mFilter.GetOriginatorProcessName().ToUpper();
-
-            // The adlist file is only allowed by driver
-            if (isAdListFile(fname))
-            {
-                e.ProcessRequest = false;
-                e.ResultCode = ERROR_ACCESS_DENIED;
-                Console.WriteLine("Process " + process + " tried to rename/move adlist file. Request blocked.");
-                evLog.WriteEntry("Process " + process + " tried to rename/move adlist file. Request blocked.");
-
-                return;
-            }
 
             // is the user trying to rename only filename? (excluding extension)
             if (isActiveDataFileName(newfname))
@@ -249,374 +249,185 @@ namespace ADService
         {
             string process = mFilter.GetOriginatorProcessName().ToUpper();
             string fname = e.FileName.ToUpper();
-            
-            // The adlist file is only allowed by driver, any other process cannot read it
-            if (isAdListFile(fname))
-            {                
-                e.ProcessRequest = false;
-                e.ResultCode = ERROR_ACCESS_DENIED;
-                Console.WriteLine("Process " + process + " tried to read adlist file. Request blocked.");
-                evLog.WriteEntry("Process " + process + " tried to read adlist file. Request blocked.");
 
+            // Reset return codes
+            e.ProcessRequest = true;
+            e.ResultCode = 0;
+
+            // AlternateDataStream (ADS) are allowed
+            if (isAlternateDataStream(fname))
+            {
+                Console.WriteLine("Process "+process+" is allowed to read ADS for file " + fname);
+                evLog.WriteEntry("Process " + process + " is allowed to read ADS for file " + fname);
                 return;
             }
-
-            // some error may occur...
-            int errorCode;
-            byte[] adBuff = readActiveDataHeader(fname, out errorCode);
-            if (errorCode == 0)
+            
+            if(isAdProcess(process))
             {
-                ActiveDataFile adf = ByteArrayToActiveData(adBuff);
+                ActiveDataFile adf = readActiveDataHeader(e.FileName, out bool ok);
+                if (ok)
+                {                    
+                    // check if the file is an activedata "magic word" (maybe a though check is needed...)
+                    if (baToStringNull(adf.magic) != "*AD*" && baToStringNull(adf.magic2) != "DF")
+                    {
+                        e.ProcessRequest = false;
+                        e.ResultCode = ERROR_BAD_FORMAT;
+                        Console.WriteLine("Reading of file " + fname + " failed. It's not an activedata.");
+                        evLog.WriteEntry("Reading of file " + fname + " failed. It's not an activedata.");
 
-                // check if the file is an activedata "magic word" (maybe a though check is needed...)
-                if (baToStringNull(adf.magic) != "*AD*")
-                {                                        
+                        return;
+                    }
+                    else
+                    {
+                        Console.WriteLine("File " + fname + " IS AN ACTIVEDATA!!!");
+                    }
+                }
+                else
+                {
                     e.ProcessRequest = false;
                     e.ResultCode = ERROR_BAD_FORMAT;
-                    Console.WriteLine("Reading of file {0} failed. It's not an activedata.", fname);
-                    evLog.WriteEntry("Reading of file " + fname + " failed. It's not an activedata.");
+                    Console.WriteLine("Reading of activedata header of file " + fname + " failed.");
+                    evLog.WriteEntry("Reading of activedata header of file " + fname + " failed.");
 
                     return;
                 }
 
-                // ok, so the file is an active data, is the activedata editor opening it?
-                if(isAdProcess(process))
-                {
-                    // Yes, perform checks and execute onRead event
-                    Console.WriteLine("Reading of file {0} by AdEditor...exec onRead", fname);
-                }
-
-                // not active data editor? So check for mail/browser app
-                if (isAllowedApp(process))
-                {
-                    // Yes, perform checks and execute onRead event
-                    Console.WriteLine("Reading of file {0} by {1}...exec onShare", fname, process);
-                }
+                // check onread
             }
             else
             {
                 e.ProcessRequest = false;
-                e.ResultCode = errorCode;
-                Console.WriteLine("Reading of file {0} failed. Blocking further processing. Error code: "+errorCode);
-                evLog.WriteEntry("Reading of file {0} failed. Blocking further processing. Error code: " + errorCode);
+                e.ResultCode = ERROR_ACCESS_DENIED;
+            }                                                                     
+        }
 
-                return;
+        // ***********************************************
+        //
+        //         HELPER FUNCTIONS...TO BE CLEARED!
+        //
+        // ***********************************************
+        
+        private ActiveDataFile readActiveDataHeader(string fname, out bool ok)
+        {
+            // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
+            CBFSFilterStream s = mFilter.CreateFileDirectAsStream(fname, false, FILE_READ_DATA, OPEN_EXISTING, (int)FILE_ATTRIBUTE_NORMAL);
+            byte[] buffer = new byte[2048].Initialize(0);
+            try
+            {
+                ok = true;                
+                long currentPos = s.Position;
+                s.Seek(0, SeekOrigin.Begin);
+                int actualRead = s.Read(buffer, 0, buffer.Length);
+                s.Seek(currentPos, SeekOrigin.Begin);
+                s.Close();
+
+                if (actualRead != 2048) ok = false;                                                
             }
-               
-            // *********************** CODE USED TO UPDATE FILE *********************************
-               // UInt64 n = 0; 
-               // IntPtr ptr = new IntPtr((int)n);
-               // SetFilePointerEx((IntPtr)fHandler, -buff.Length, IntPtr.Zero, 1); //FILE_BEGIN = 0, FILE_POSITION = 1
+            catch(Exception ioe)
+            {
+                Console.WriteLine("readheader IOE: " + ioe.ToString());
+                ok = false;                
+            }
 
-               // var natOverlap3 = new NativeOverlapped { OffsetLow = (int)0 };
-               // WriteFile((IntPtr)fHandler, buff, 2048, out buffWritten, ref natOverlap3);                                           
+            GCHandle handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            try
+            {
+                return (ActiveDataFile)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(ActiveDataFile));
+            }
+            finally
+            {
+                handle.Free();
+            }        
+        }
+
+        private bool writeActiveDataHeader(string fname, ActiveDataFile adf)
+        {
+            // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
+            CBFSFilterStream s = mFilter.CreateFileDirectAsStream(fname, false, FILE_WRITE_DATA, OPEN_EXISTING, (int)FILE_ATTRIBUTE_NORMAL);
+            try
+            {
+                int length = Marshal.SizeOf(adf);
+                IntPtr ptr = Marshal.AllocHGlobal(length);
+                byte[] outBuffer = new byte[length];
+
+                Marshal.StructureToPtr(adf, ptr, true);
+                Marshal.Copy(ptr, outBuffer, 0, length);
+                Marshal.FreeHGlobal(ptr);
+
+                long currentPos = s.Position;
+                s.Seek(0, SeekOrigin.Begin);
+                s.Write(outBuffer, 0, outBuffer.Length);
+                s.Seek(currentPos, SeekOrigin.Begin);
+                s.Close();
+
+                return true;
+            }
+            catch (Exception ioe)
+            {
+                Console.WriteLine("readheader IOE: " + ioe.ToString());
+                return false;
+            }            
+        }
+
+
+        private string computeFileHash(string fname)
+        {
+            try
+            {
+                using (FileStream fs = new FileStream(@fname, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    byte[] hash = sha1.ComputeHash(fs);
+                    StringBuilder sb = new StringBuilder(2 * hash.Length);
+                    foreach (byte b in hash)
+                        sb.Append(b.ToString("X2"));
+                    return sb.ToString();
+                }
+            }
+            catch(Exception)
+            {
+                return null;
+            }
         }
 
         /*
-         * Then NotifyClose event is called just after the file have been closed.
-         * It opens the file, check if size is >=2048 bytes and after that checks
-         * a possible activedata header. If so, it checks the filename to see
-         * if some process is trying to save an actual activedata into another filename
-         * with different extension ("Save As...") just to bypass any further control.
-         * If so, the service/driver rename the file into .activedata extension
-         * This check is performed only if a file is coming from browsers or mail
-         * client (download attachment). If the process is the activedata editor nothing
-         * is done.
+         * Returns true if the process trying to acces file is the adEditor
          */
-        private void OnNotifyCloseFile(object Sender, CbfilterNotifyCloseFileEventArgs e)
-        {
-            string process = mFilter.GetOriginatorProcessName().ToUpper();
-            string fname = e.FileName.ToUpper();
-
-            // An allowed app is trying to save something not (possibily?) .activedata?
-            if (isAllowedApp(process) && !isActiveDataFileName(fname))
-            {
-                int errorCode;
-                long fSize = getFileSize(fname, out errorCode);
-                if(errorCode!=0)
-                {
-                    e.ResultCode = errorCode;
-                    Console.WriteLine("Getting size of file {0} failed after close. Error code: " + errorCode);
-                    evLog.WriteEntry("Getting size of file {0} failed after close. Error code: " + errorCode);
-
-                    return;
-                }
-
-                // not enough bytes...surely is not an activedata!
-                if (fSize < 2048) return;
-
-                // Read header of file                
-                byte[] baBuff = readActiveDataHeader(fname, out errorCode);
-                if(errorCode!=0)
-                {
-                    e.ResultCode = errorCode;
-                    Console.WriteLine("Reading of file {0} failed after close. Error code: " + errorCode);
-                    evLog.WriteEntry("Reading of file {0} failed after close. Error code: " + errorCode);
-
-                    return;
-                }
-
-                ActiveDataFile adf = ByteArrayToActiveData(baBuff);
-                string magic = Encoding.UTF8.GetString(adf.magic);
-                string magic2 = Encoding.UTF8.GetString(adf.magic2);
-                // Is it an active data file?
-                if (magic == "*AD*" && magic2 == "DF")
-                {
-                    // Compute hash to see if file was already saved
-                    string hash = computeFileHash(fname, out errorCode);
-                    if(errorCode!=0)
-                    {
-                        e.ResultCode = errorCode;
-                        Console.WriteLine("Computing hash of file {0} failed after close. Deleting. Error code: " + errorCode);
-                        evLog.WriteEntry("Computing hash of file {0} failed after close. Deleting. Error code: " + errorCode);
-
-                        File.Delete(fname);
-
-                        return;
-                    }
-
-                    // Was the file saved before?
-                    if(isAlreadyProcessed(hash))
-                    {                        
-                        Console.WriteLine("File {0} was previously saved. Deleting.");
-                        evLog.WriteEntry("File {0} was previously saved. Deleting.");
-
-                        File.Delete(fname);
-
-                        return;
-                    }
-
-                    // Yes...trying to gable? Rename the file!
-                    string newFname = Path.ChangeExtension(e.FileName, ".ActiveData");
-                    System.IO.File.Move(e.FileName, newFname);
-                    // update list of processed files
-                    alreadyProcessed.Add(hash);
-
-                    Console.WriteLine("Process "+process+" tried to save an activedata with filename "+fname+". Renaming completed.");
-                    evLog.WriteEntry("Process " + process + " tried to save an activedata with filename " + fname + ". Renaming completed.");
-                }
-            }
-        }
-        
-        // HELPER FUNCTIONS...TO BE CLEARED!
-        private byte[] readActiveDataHeader(string fname, out int errorCode)
-        {
-            errorCode = 0;
-            try
-            {
-                // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
-                long fHandler = mFilter.CreateFileDirect(fname, false, FILE_READ_DATA, 3, 128, false);
-                if (fHandler == 0)
-                {
-                    errorCode = ERROR_INVALID_HANDLE;
-                    return null;
-                }
-
-                // Get the size of the file and check if the file is at least 2048 bytes long (the minimum size of activedata file)
-                long fsize = 0;
-                bool result = GetFileSizeEx((IntPtr)fHandler, out fsize);
-                if (!result || fsize < 2048)
-                {
-                    CloseHandle((IntPtr)fHandler);
-                    errorCode = (fsize < 2048) ? ERROR_BAD_FORMAT : ERROR_INVALID_HANDLE;
-                    return null;
-                }
-
-                // Read the first 2048 bytes and them map them to header format
-                byte[] buff = new byte[2048];
-                uint buffRead;
-                ReadFile((IntPtr)fHandler, buff, 2048, out buffRead, IntPtr.Zero);
-                CloseHandle((IntPtr)fHandler);
-                
-                if(buffRead!=buff.Length)
-                {
-                    errorCode = ERROR_BAD_FORMAT;
-                    return null;
-                }
-
-                int bSize = Marshal.SizeOf(new ActiveDataFile());
-                byte[] adBuff = new byte[bSize];
-                for (int i = 0; i < adBuff.Length; ++i) adBuff[i] = buff[i];
-                
-                return adBuff;
-            }
-            catch (CBFSFilterCbfilterException ex)
-            {                
-                errorCode = ex.Code;
-                return null;
-            }
-        }
-
-        private long getFileSize(string fname, out int errorCode)
-        {
-            errorCode = 0;
-            try
-            {
-                // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
-                long fHandler = mFilter.CreateFileDirect(fname, false, FILE_READ_DATA, 3, 128, false);
-                if (fHandler == 0)
-                {
-                    errorCode = ERROR_INVALID_HANDLE;
-                    return 0;
-                }
-
-                // Get the size of the file and check if the file is at least 2048 bytes long (the minimum size of activedata file)
-                long fsize = 0;
-                bool result = GetFileSizeEx((IntPtr)fHandler, out fsize);
-                CloseHandle((IntPtr)fHandler);
-                if (!result)
-                {                    
-                    errorCode = ERROR_INVALID_HANDLE;
-                    return 0;
-                }
-                
-                return fsize;
-            }
-            catch (CBFSFilterCbfilterException ex)
-            {                
-                errorCode = ex.Code;
-                return 0;
-            }
-        }
-
-        private string computeFileHash(string filename, out int errorCode)
-        {
-            errorCode = 0;
-            try
-            {
-                // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
-                long fHandler = mFilter.CreateFileDirect(filename, false, FILE_READ_DATA, 3, 128, false);
-                if (fHandler == 0)
-                {
-                    errorCode = ERROR_INVALID_HANDLE;
-                    return null;
-                }
-
-                // Get the size of the file and check if the file is at least 2048 bytes long (the minimum size of activedata file)
-                long fsize = 0;
-                bool result = GetFileSizeEx((IntPtr)fHandler, out fsize);
-                if (!result)
-                {
-                    CloseHandle((IntPtr)fHandler);
-                    errorCode = ERROR_INVALID_HANDLE;
-                    return null;
-                }
-
-                // Read the first 2048 bytes and them map them to header format
-                byte[] buff = new byte[fsize];
-                uint buffRead;
-                ReadFile((IntPtr)fHandler, buff, (uint)buff.Length, out buffRead, IntPtr.Zero);
-                CloseHandle((IntPtr)fHandler);
-
-                if (buffRead != buff.Length)
-                {
-                    errorCode = ERROR_BAD_FORMAT;
-                    return null;
-                }
-
-                byte[] hash = sha1.ComputeHash(buff);
-                var sb = new StringBuilder(hash.Length * 2);
-
-                foreach (byte b in hash)                
-                    sb.Append(b.ToString("X2"));
-
-                return sb.ToString();
-            }
-            catch (CBFSFilterCbfilterException ex)
-            {                
-                errorCode = ex.Code;
-                return null;
-            }
-        }
-
         private bool isAdProcess(string process)
         {
             if (process.EndsWith("ADEDITOR.EXE"))
             {
                 // compute file hash to verify origin of app
-                int errorCode;
-                string hash = computeFileHash(process, out errorCode);
-                if(errorCode==0 && hash==ADEDITOR_HASH) 
+                string hash = computeFileHash(process);
+                // no error and same hash
+                if(hash==ADEDITOR_HASH) 
                     return true;
             }
 
             return false;
-        }
-
-        private bool isAdListFile(string filename)
-        {
-            return filename.ToUpper().EndsWith(ADLIST_EXTENSION);
-        }
+        }        
         
+        /*
+         * Transform a bytearray to string removing trailing null characters
+         */
         private string baToStringNull(byte[] b)
         {
             return Encoding.UTF8.GetString(b).Replace('\0', ' ').Trim();
         }
-
-        private ActiveDataFile ByteArrayToActiveData(byte[] bytes)
-        {
-            GCHandle handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
-            try
-            {
-                ActiveDataFile stuff = (ActiveDataFile)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(ActiveDataFile));
-                return stuff;
-            }
-            finally
-            {
-                handle.Free();
-            }
-        }
-
-        private bool isAlreadyProcessed(string toLook)
-        {
-            return alreadyProcessed.Contains(toLook);
-        }
-
-        private void loadProcessedFile()
-        {
-            try
-            {
-                alreadyProcessed = new List<string>(File.ReadAllLines(ADLIST_FILE));
-
-                Console.WriteLine(ADLIST_FILE + " loaded. Currently known files: "+alreadyProcessed.Count);
-                evLog.WriteEntry(ADLIST_FILE + " loaded. Currently known files: " + alreadyProcessed.Count);
-            }
-            catch(FileNotFoundException)
-            {
-                alreadyProcessed.Clear();
-
-                Console.WriteLine(ADLIST_FILE+" does not exits. Clearing and starting from scratch.");
-                evLog.WriteEntry(ADLIST_FILE + " does not exits. Clearing and starting from scratch.");
-            }
-        }
-
-        private void updateProcessedFile()
-        {
-            using (StreamWriter sw = File.CreateText(ADLIST_FILE))
-            {
-                foreach (string l in alreadyProcessed)
-                    sw.WriteLine(l);
-            }
-        }
-
+        
+        /*
+         * Returns true if the given filename is (possibily) an activedata
+         */
         private bool isActiveDataFileName(string filename)
         {
             return filename.ToUpper().EndsWith(ACTIVEDATA_EXTENSION);
         }        
 
-        private bool isAllowedApp(string process)
+        /*
+         * Returns true if the filename is an ADS (Alternate Data Stream)
+         */
+        private bool isAlternateDataStream(string filename)
         {
-            var mc = PlatformMail.getInstalledMailClients();
-            var bc = PlatformBrowser.GetInstalledBrowsers();
-            for (var i = 0; i < bc.Count; i++)
-            {
-                if (bc[i].ExecutablePath.ToUpper() == process) return true;
-            }
-            for (var i = 0; i < mc.Length; i++)
-            {
-                if (mc[i].ExecutablePath.ToUpper() == process) return true;
-            }
-            return false;
+            return (filename.ToUpper().EndsWith(".ZONE.IDENTIFIER"));
         }
     }
 }

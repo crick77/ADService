@@ -32,7 +32,7 @@ namespace ADService
         private const uint ERROR_AD_EXPIRED = 0xA007052E;                
         // Useful constants        
         private const string ACTIVEDATA_EXTENSION = ".ACTIVEDATA";
-        private const string ADEDITOR_HASH = "6FB8B1C571EEB44D96A32B39F6DA194141A98FAF";
+        private const string ADEDITOR_HASH = "D1548905DB6D8FEEFC8CBFA729030B5F50BAF823";
         // File access constants (fileapi.h CreateFileA/W)
         private const int DELETE = 0x00010000;
         private const int READ_CONTROL = 0x00020000;

@@ -9,7 +9,8 @@ using System.IO;
 using callback.CBFSFilter;
 using adEditor;
 using System.Security.Cryptography;
-using MintPlayer.PlatformBrowser;
+using System.IO.Pipes;
+using System.Security.Principal;
 
 namespace ADService
 {
@@ -292,7 +293,20 @@ namespace ADService
                     return;
                 }
 
-                // check onread
+                // ask to app for key to app (maybe expand code here to interact with desktop app later (eg. errors)
+                string pvtKey = askForKey(e.FileName);
+                var csp = new RSACryptoServiceProvider(2048);
+
+                //get the object back from the stream
+                var privateKey = new RSAParameters();
+                privateKey.Exponent = Convert.FromBase64String(pvtKey.Substring(0, 4));
+                privateKey.Modulus = Convert.FromBase64String(pvtKey.Substring(4));
+
+                // decrypt header
+                var clearHeader = csp.Decrypt(headerbuff, false);
+                // decrypt guard header
+                // do checks
+                // update (eventually) file
             }
             else
             {
@@ -428,6 +442,125 @@ namespace ADService
         private bool isAlternateDataStream(string filename)
         {
             return (filename.ToUpper().EndsWith(".ZONE.IDENTIFIER"));
+        }
+
+        private string askForKey(string filename)
+        {
+            var pipeClient =
+                    new NamedPipeClientStream(".", "testpipe",
+                        PipeDirection.InOut, PipeOptions.None,
+                        TokenImpersonationLevel.Impersonation);
+            pipeClient.Connect();
+
+            var ss = new StreamString(pipeClient);
+            string key = null;
+            // Validate the server's signature string.
+            if (ss.ReadString() == "HLO!")
+            {
+                // The client security token is sent with the first write.
+                // Send the name of the file whose contents are returned
+                // by the server.
+                ss.WriteString(filename);
+
+                // Print the file to the screen.
+                key = ss.ReadString();
+            }
+            else
+            
+            pipeClient.Close();
+            pipeClient.Dispose();
+
+            return key;
+        }
+    }
+
+    public class StreamString
+    {
+        private Stream ioStream;
+        private UnicodeEncoding streamEncoding;
+
+        public StreamString(Stream ioStream)
+        {
+            this.ioStream = ioStream;
+            streamEncoding = new UnicodeEncoding();
+        }
+
+        public string ReadString()
+        {
+            int len;
+            len = ioStream.ReadByte() * 256;
+            len += ioStream.ReadByte();
+            var inBuffer = new byte[len];
+            ioStream.Read(inBuffer, 0, len);
+
+            return streamEncoding.GetString(inBuffer);
+        }
+
+        public int WriteString(string outString)
+        {
+            byte[] outBuffer = streamEncoding.GetBytes(outString);
+            int len = outBuffer.Length;
+            if (len > UInt16.MaxValue)
+            {
+                len = (int)UInt16.MaxValue;
+            }
+            ioStream.WriteByte((byte)(len / 256));
+            ioStream.WriteByte((byte)(len & 255));
+            ioStream.Write(outBuffer, 0, len);
+            ioStream.Flush();
+
+            return outBuffer.Length + 2;
+        }
+    }
+
+    public class AesCryptographyService
+    {
+        public byte[] Encrypt(byte[] data, byte[] key, byte[] iv)
+        {
+            using (var aes = Aes.Create())
+            {
+                aes.KeySize = 128;
+                aes.BlockSize = 128;
+                aes.Padding = PaddingMode.PKCS7;
+
+                aes.Key = key;
+                aes.IV = iv;
+
+                using (var encryptor = aes.CreateEncryptor(aes.Key, aes.IV))
+                {
+                    return PerformCryptography(data, encryptor);
+                }
+            }
+        }
+
+        public byte[] Decrypt(byte[] data, byte[] key, byte[] iv)
+        {
+            using (var aes = Aes.Create())
+            {
+                aes.KeySize = 128;
+                aes.BlockSize = 128;
+                aes.Padding = PaddingMode.PKCS7;
+
+                aes.Key = key;
+                aes.IV = iv;
+
+                using (var decryptor = aes.CreateDecryptor(aes.Key, aes.IV))
+                {
+                    return PerformCryptography(data, decryptor);
+                }
+            }
+        }
+
+        private byte[] PerformCryptography(byte[] data, ICryptoTransform cryptoTransform)
+        {
+            using (var ms = new MemoryStream())
+            using (var cryptoStream = new CryptoStream(ms, cryptoTransform, CryptoStreamMode.Write))
+            {
+                cryptoStream.Write(data, 0, data.Length);
+                cryptoStream.FlushFinalBlock();
+
+                return ms.ToArray();
+            }
         }
     }
 }

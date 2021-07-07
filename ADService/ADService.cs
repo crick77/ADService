@@ -71,20 +71,22 @@ namespace ADService
         private const uint FILE_FLAG_SESSION_AWARE = 0x00800000;
         private const uint FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000;
         private const uint FILE_FLAG_WRITE_THROUGH = 0x80000000;
+        // Crypto data
+        private static readonly byte[] iv = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
         // Kernel api import
-/*        [DllImport("kernel32.dll")]
-        static extern bool GetFileSizeEx(IntPtr hFile, out long lpFileSize);
-        [DllImport("kernel32.dll")]
-        static extern bool CloseHandle(IntPtr hFile);
-        [DllImport("kernel32.dll", BestFitMapping = true, CharSet = CharSet.Ansi, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool ReadFile(IntPtr hFile, byte[] lpbuffer, UInt32 nNumberofBytesToRead, out UInt32 lpNumberofBytesRead, IntPtr lpOverlapped);
-        [DllImport("kernel32.dll")]
-        static extern bool WriteFile(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite, out uint lpNumberOfBytesWritten, [In] ref System.Threading.NativeOverlapped lpOverlapped);
-        [DllImport("kernel32.dll")]
-        static extern bool SetFilePointerEx(IntPtr hFile, long liDistanceToMove, IntPtr lpNewFilePointer, uint dwMoveMethod);
-*/
+        /*        [DllImport("kernel32.dll")]
+                static extern bool GetFileSizeEx(IntPtr hFile, out long lpFileSize);
+                [DllImport("kernel32.dll")]
+                static extern bool CloseHandle(IntPtr hFile);
+                [DllImport("kernel32.dll", BestFitMapping = true, CharSet = CharSet.Ansi, SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool ReadFile(IntPtr hFile, byte[] lpbuffer, UInt32 nNumberofBytesToRead, out UInt32 lpNumberofBytesRead, IntPtr lpOverlapped);
+                [DllImport("kernel32.dll")]
+                static extern bool WriteFile(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite, out uint lpNumberOfBytesWritten, [In] ref System.Threading.NativeOverlapped lpOverlapped);
+                [DllImport("kernel32.dll")]
+                static extern bool SetFilePointerEx(IntPtr hFile, long liDistanceToMove, IntPtr lpNewFilePointer, uint dwMoveMethod);
+        */
 
         /*
          * Constructor
@@ -265,11 +267,13 @@ namespace ADService
             
             if(isAdProcess(process))
             {
-                ActiveDataFile adf = readActiveDataHeader(e.FileName, out bool ok);
-                if (ok)
-                {                    
+                byte[] rawActiveDataHeader = readRaw(e.FileName, 190);
+                if (rawActiveDataHeader!=null)
+                {
+                    ActiveDataHeader adh = byteArrayToActiveDataHeader(rawActiveDataHeader);
+
                     // check if the file is an activedata "magic word" (maybe a though check is needed...)
-                    if (baToStringNull(adf.magic) != "*AD*" && baToStringNull(adf.magic2) != "DF")
+                    if (string.Equals(baToStringNull(adh.magic), "*AD*") && string.Equals(baToStringNull(adh.magic2), "DF"))
                     {
                         e.ProcessRequest = false;
                         e.ResultCode = ERROR_BAD_FORMAT;
@@ -280,6 +284,7 @@ namespace ADService
                     }
                     else
                     {
+                        // debug purposes...remove
                         Console.WriteLine("File " + fname + " IS AN ACTIVEDATA!!!");
                     }
                 }
@@ -293,8 +298,35 @@ namespace ADService
                     return;
                 }
 
+                var pipeClient = new NamedPipeClientStream(".", "ad_pipe", PipeDirection.InOut, PipeOptions.None, TokenImpersonationLevel.Impersonation);
+                pipeClient.Connect();
+
+                var ss = new StreamString(pipeClient);
+                string pvtKey = null;
+
+                // Validate the server's signature string.
+                if (ss.ReadString() == "HLO!")
+                {
+                    // The client security token is sent with the first write.
+                    // Send the name of the file whose contents are returned
+                    // by the server.
+                    ss.WriteString(Path.GetFileName(e.FileName));
+
+                    // Print the file to the screen.
+                    pvtKey = ss.ReadString();
+                }
+                else
+                {
+                    // unknow pipe server...error!
+                    pipeClient.Close();
+                    pipeClient.Dispose();
+
+                    e.ProcessRequest = false;
+                    e.ResultCode = ERROR_ACCESS_DENIED;
+                    return;
+                }
+              
                 // ask to app for key to app (maybe expand code here to interact with desktop app later (eg. errors)
-                string pvtKey = askForKey(e.FileName);
                 var csp = new RSACryptoServiceProvider(2048);
 
                 //get the object back from the stream
@@ -303,10 +335,82 @@ namespace ADService
                 privateKey.Modulus = Convert.FromBase64String(pvtKey.Substring(4));
 
                 // decrypt header
-                var clearHeader = csp.Decrypt(headerbuff, false);
-                // decrypt guard header
-                // do checks
-                // update (eventually) file
+                // first copy internal block inside another buffer
+                int headerSize = ActiveDataHeaderSize();
+                byte[] subBuffer = new byte[headerSize - 7];
+                Array.Copy(rawActiveDataHeader, 4, subBuffer, 0, subBuffer.Length);
+                var clearHeader = csp.Decrypt(subBuffer, false);
+                // copy back the buffer into original
+                Array.Copy(clearHeader, 0, rawActiveDataHeader, 4, clearHeader.Length);
+                // convert back again into ActiveDataHeader
+                ActiveDataHeader adhDecrypted = byteArrayToActiveDataHeader(rawActiveDataHeader);
+
+                // skip any extended header
+                long startPos = headerSize;
+                while(adhDecrypted.nextHeaderLen!=0)
+                {
+                    startPos += adhDecrypted.nextHeaderLen;
+                }
+
+                // read guard header
+                byte[] rawActiveDataGuardHeader10 = readRaw(e.FileName, ActiveDataGuardHeader10Size(), startPos);
+                // decrypt guard header with symmetric key
+                var crypto = new AesCryptographyService();
+                byte[] clearActiveDataGuardHeader10 = crypto.Decrypt(rawActiveDataGuardHeader10, adhDecrypted.symmetricKey, iv);
+                ActiveDataGuardHeader10 adgh10 = byteArrayToActiveDataGuardHeader10(clearActiveDataGuardHeader10);
+
+                // do check on expire date
+                if(adgh10.expireDate!=0 && adgh10.expireDate<DateTime.Now.Ticks)
+                {
+                    ss.WriteString("EXPIRED");
+                    pipeClient.Close();
+                    pipeClient.Dispose();
+
+                    e.ProcessRequest = false;
+                    unchecked  
+                    {  
+                        e.ResultCode = (int)ERROR_AD_EXPIRED;
+                    }
+                    return;
+                }
+
+                // do checks on open counter
+                if (adgh10.counter != -1)
+                {
+                    if (adgh10.counter == 0)
+                    {
+                        ss.WriteString("EXPIRED");
+                        pipeClient.Close();
+                        pipeClient.Dispose();
+
+                        e.ProcessRequest = false;
+                        unchecked
+                        {
+                            e.ResultCode = (int)ERROR_AD_EXPIRED;
+                        }
+                        return;
+                    }
+                    else
+                    {
+                        adgh10.counter--;
+                    }
+                }
+
+                // update header
+                adgh10.openCount++;
+                // back to bytes
+                clearActiveDataGuardHeader10 = ActiveDataGuardHeader10ToBytes(adgh10);
+                // encrypt back using symmetric key
+                rawActiveDataGuardHeader10 = crypto.Encrypt(clearActiveDataGuardHeader10, adhDecrypted.symmetricKey, iv);
+                // write back to file
+                writeRaw(e.FileName, rawActiveDataGuardHeader10, startPos);
+
+                // message back to client
+                ss.WriteString("OK");
+
+                // close the pipe
+                pipeClient.Close();
+                pipeClient.Dispose();
             }
             else
             {
@@ -317,60 +421,134 @@ namespace ADService
 
         // ***********************************************
         //
-        //         HELPER FUNCTIONS...TO BE CLEARED!
+        //         HELPER FUNCTIONS
         //
         // ***********************************************
-        
-        private ActiveDataFile readActiveDataHeader(string fname, out bool ok)
+
+        private byte[] readRaw(string fname, int size, long startPosition = 0)
         {
-            // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
-            CBFSFilterStream s = mFilter.CreateFileDirectAsStream(fname, false, FILE_READ_DATA, OPEN_EXISTING, (int)FILE_ATTRIBUTE_NORMAL);
-            byte[] buffer = new byte[2048].Initialize(0);
             try
             {
-                ok = true;                
+                byte[] buffer = new byte[size].Initialize(0);
+
+                CBFSFilterStream s = mFilter.CreateFileDirectAsStream(fname, false, FILE_READ_DATA, OPEN_EXISTING, (int)FILE_ATTRIBUTE_NORMAL);
                 long currentPos = s.Position;
-                s.Seek(0, SeekOrigin.Begin);
+                s.Seek(startPosition, SeekOrigin.Begin);
                 int actualRead = s.Read(buffer, 0, buffer.Length);
                 s.Seek(currentPos, SeekOrigin.Begin);
                 s.Close();
 
-                if (actualRead != 2048) ok = false;                                                
+                if (actualRead == buffer.Length) return buffer;
             }
-            catch(Exception ioe)
+            catch (Exception ioe)
             {
                 Console.WriteLine("readheader IOE: " + ioe.ToString());
-                ok = false;                
             }
+            return null;
+        }
 
+        private ActiveDataGuardHeader10 byteArrayToActiveDataGuardHeader10(byte[] buffer)
+        {
             GCHandle handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
             try
             {
-                return (ActiveDataFile)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(ActiveDataFile));
+                return (ActiveDataGuardHeader10)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(ActiveDataGuardHeader10));
             }
             finally
             {
                 handle.Free();
-            }        
+            }
+        }
+                
+        private ActiveDataHeader byteArrayToActiveDataHeader(byte[] buffer)
+        {
+            GCHandle handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            try
+            {
+                return (ActiveDataHeader)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(ActiveDataHeader));
+            }
+            finally
+            {
+                handle.Free();
+            }
         }
 
-        private bool writeActiveDataHeader(string fname, ActiveDataFile adf)
+        private byte[] ActiveDataHeaderToBytes(ActiveDataHeader adh)
+        {
+            int length = Marshal.SizeOf(adh);
+            IntPtr ptr = Marshal.AllocHGlobal(length);
+            byte[] myBuffer = new byte[length];
+
+            Marshal.StructureToPtr(adh, ptr, true);
+            Marshal.Copy(ptr, myBuffer, 0, length);
+            Marshal.FreeHGlobal(ptr);
+
+            return myBuffer;
+        }
+
+        private int ActiveDataHeaderSize()
+        {
+            return Marshal.SizeOf(new ActiveDataHeader());
+        }
+
+        private int ActiveDataGuardHeader10Size()
+        {
+            return Marshal.SizeOf(new ActiveDataGuardHeader10());
+        }
+
+        private byte[] ActiveDataGuardHeader10ToBytes(ActiveDataGuardHeader10 adgh10)
+        {
+            int length = Marshal.SizeOf(adgh10);
+            IntPtr ptr = Marshal.AllocHGlobal(length);
+            byte[] myBuffer = new byte[length];
+
+            Marshal.StructureToPtr(adgh10, ptr, true);
+            Marshal.Copy(ptr, myBuffer, 0, length);
+            Marshal.FreeHGlobal(ptr);
+
+            return myBuffer;
+        }
+
+
+        //private bool writeActiveDataHeader(string fname, ActiveDataFile adf)
+        //{
+        //    // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
+        //    CBFSFilterStream s = mFilter.CreateFileDirectAsStream(fname, false, FILE_WRITE_DATA, OPEN_EXISTING, (int)FILE_ATTRIBUTE_NORMAL);
+        //    try
+        //    {
+        //        int length = Marshal.SizeOf(adf);
+        //        IntPtr ptr = Marshal.AllocHGlobal(length);
+        //        byte[] outBuffer = new byte[length];
+
+        //        Marshal.StructureToPtr(adf, ptr, true);
+        //        Marshal.Copy(ptr, outBuffer, 0, length);
+        //        Marshal.FreeHGlobal(ptr);
+
+        //        long currentPos = s.Position;
+        //        s.Seek(0, SeekOrigin.Begin);
+        //        s.Write(outBuffer, 0, outBuffer.Length);
+        //        s.Seek(currentPos, SeekOrigin.Begin);
+        //        s.Close();
+
+        //        return true;
+        //    }
+        //    catch (Exception ioe)
+        //    {
+        //        Console.WriteLine("readheader IOE: " + ioe.ToString());
+        //        return false;
+        //    }            
+        //}
+
+
+        private bool writeRaw(string fname, byte[] buffer, long startPos)
         {
             // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
             CBFSFilterStream s = mFilter.CreateFileDirectAsStream(fname, false, FILE_WRITE_DATA, OPEN_EXISTING, (int)FILE_ATTRIBUTE_NORMAL);
             try
-            {
-                int length = Marshal.SizeOf(adf);
-                IntPtr ptr = Marshal.AllocHGlobal(length);
-                byte[] outBuffer = new byte[length];
-
-                Marshal.StructureToPtr(adf, ptr, true);
-                Marshal.Copy(ptr, outBuffer, 0, length);
-                Marshal.FreeHGlobal(ptr);
-
+            {                
                 long currentPos = s.Position;
-                s.Seek(0, SeekOrigin.Begin);
-                s.Write(outBuffer, 0, outBuffer.Length);
+                s.Seek(startPos, SeekOrigin.Begin);
+                s.Write(buffer, 0, buffer.Length);
                 s.Seek(currentPos, SeekOrigin.Begin);
                 s.Close();
 
@@ -378,11 +556,10 @@ namespace ADService
             }
             catch (Exception ioe)
             {
-                Console.WriteLine("readheader IOE: " + ioe.ToString());
+                Console.WriteLine("writebuffer IOE: " + ioe.ToString());
                 return false;
-            }            
+            }
         }
-
 
         private string computeFileHash(string fname)
         {
@@ -447,7 +624,7 @@ namespace ADService
         private string askForKey(string filename)
         {
             var pipeClient =
-                    new NamedPipeClientStream(".", "testpipe",
+                    new NamedPipeClientStream(".", "ad_pipe",
                         PipeDirection.InOut, PipeOptions.None,
                         TokenImpersonationLevel.Impersonation);
             pipeClient.Connect();
@@ -465,7 +642,6 @@ namespace ADService
                 // Print the file to the screen.
                 key = ss.ReadString();
             }
-            else
             
             pipeClient.Close();
             pipeClient.Dispose();

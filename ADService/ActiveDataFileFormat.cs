@@ -6,54 +6,9 @@ using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 
 namespace adEditor
-{
+{    
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct CounterVar
-    {
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
-        public byte[] varName;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 36)]
-        public byte[] varGuid;
-
-        [MarshalAs(UnmanagedType.U1)]
-        public byte refCount;
-
-        [MarshalAs(UnmanagedType.U2)]
-        public short value;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct DateVar
-    {
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
-        public byte[] varName;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 36)]
-        public byte[] varGuid;
-
-        [MarshalAs(UnmanagedType.U1)]
-        public byte refCount;
-
-        [MarshalAs(UnmanagedType.U8)]
-        public long value;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct Event
-    {
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
-        public byte[] eventName;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 36)]
-        public byte[] varGuid;
-
-        [MarshalAs(UnmanagedType.U2)]
-        public short decreaseQty;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct ActiveDataFile
+    public struct ActiveDataHeader
     {
         // must be set to "*AD*"
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
@@ -68,48 +23,81 @@ namespace adEditor
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 64)]
         public byte[] owner;
 
+        [MarshalAs(UnmanagedType.U4)]
+        public int nextHeaderLen;
+
+        [MarshalAs(UnmanagedType.U2)]
+        public short dataCount;
+
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 259)]
+        public byte[] publicKey;
+
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        public byte[] symmetricKey;
+
         // This is the SHA1 of only metadata fields with this and "dataHash" fields set to 0
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
-        public byte[] metaDataHash;
+        public byte[] headerHash;
 
         // This is the SHA1 of WHOLE data block - means ALL data fields togheter (ActiveDataFields structure + data)
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
         public byte[] dataHash;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)]
-        public CounterVar[] counter;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)]
-        public DateVar[] datetime;
-
+       
+        // Must be set to "DFB"
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-        public Event[] events;
-
-        // Must be set to "DF"
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
         public byte[] magic2;
-
-        [MarshalAs(UnmanagedType.U4)]
-        public uint openCount;
-
-        [MarshalAs(UnmanagedType.U2)]
-        public short dataCount;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct ActiveDataFields
+    public struct ActiveDataNextHeader
+    {        
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+        public byte[] headerName;
+
+        [MarshalAs(UnmanagedType.U4)]
+        public int nextHeaderLen;
+
+        // follow content
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct ActiveDataGuardHeader10 
+    {
+        // Must be "GRD1"
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+        public byte[] magic;
+
+        [MarshalAs(UnmanagedType.U4)]
+        public int openCount;
+
+        [MarshalAs(UnmanagedType.U4)]
+        public int counter;
+
+        [MarshalAs(UnmanagedType.U8)]
+        public long expireDate;
+
+        // bit field (bit 0 - "can share")
+        [MarshalAs(UnmanagedType.U2)]
+        public short flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct ActiveDataDataBlock
     {
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
-        public byte[] fieldName;
+        public byte[] name;
 
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 24)]
         public byte[] extension;
 
-        [MarshalAs(UnmanagedType.U4)]
-        public uint flag;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+        public byte[] type;
+
+        [MarshalAs(UnmanagedType.U2)]
+        public short flag;
 
         [MarshalAs(UnmanagedType.U4)]
-        public uint fieldSize;
+        public uint dataLen;
 
         // follow "filedSize" bytes of data
     }

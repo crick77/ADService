@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 
 namespace adEditor
-{    
+{
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     public struct ActiveDataHeader
     {
@@ -32,17 +32,13 @@ namespace adEditor
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 259)]
         public byte[] publicKey;
 
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
         public byte[] symmetricKey;
 
         // This is the SHA1 of only metadata fields with this and "dataHash" fields set to 0
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
         public byte[] headerHash;
 
-        // This is the SHA1 of WHOLE data block - means ALL data fields togheter (ActiveDataFields structure + data)
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
-        public byte[] dataHash;
-       
         // Must be set to "DFB"
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
         public byte[] magic2;
@@ -50,7 +46,7 @@ namespace adEditor
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     public struct ActiveDataNextHeader
-    {        
+    {
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
         public byte[] headerName;
 
@@ -61,7 +57,7 @@ namespace adEditor
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct ActiveDataGuardHeader10 
+    public struct ActiveDataGuardHeader10
     {
         // Must be "GRD1"
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
@@ -96,9 +92,13 @@ namespace adEditor
         [MarshalAs(UnmanagedType.U2)]
         public short flag;
 
+        // This is the SHA1 of WHOLE data block - means ALL data fields togheter (ActiveDataFields structure + unencrypted data)
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
+        public byte[] dataHash;
+
         [MarshalAs(UnmanagedType.U4)]
         public uint dataLen;
 
-        // follow "filedSize" bytes of data
+        // follow "cryptLen" bytes of data
     }
 }

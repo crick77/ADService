@@ -30,7 +30,7 @@ namespace ADService
         private const int ERROR_INVALID_HANDLE = 6;
         private const int ERROR_BAD_FORMAT = 11;
         private const uint ERROR_PRIVILEGE_NOT_HELD = 1314;
-        private const uint ERROR_AD_EXPIRED = 0xA007052E;                
+        private const uint ERROR_AD_EXPIRED = 2222; //0xA007052E;                
         // Useful constants        
         private const string ACTIVEDATA_EXTENSION = ".ACTIVEDATA";
         private const string ADEDITOR_HASH = "D1548905DB6D8FEEFC8CBFA729030B5F50BAF823";
@@ -267,10 +267,11 @@ namespace ADService
             
             if(isAdProcess(process))
             {
-                byte[] rawActiveDataHeader = readRaw(e.FileName, 190);
+                byte[] rawActiveDataHeader = readRaw(e.FileName, ActiveDataHeaderSize());
+                ActiveDataHeader adh;
                 if (rawActiveDataHeader!=null)
                 {
-                    ActiveDataHeader adh = byteArrayToActiveDataHeader(rawActiveDataHeader);
+                    adh = byteArrayToActiveDataHeader(rawActiveDataHeader);
 
                     // check if the file is an activedata "magic word" (maybe a though check is needed...)
                     if (string.Equals(baToStringNull(adh.magic), "*AD*") && string.Equals(baToStringNull(adh.magic2), "DF"))
@@ -330,39 +331,33 @@ namespace ADService
                 var csp = new RSACryptoServiceProvider(2048);
 
                 //get the object back from the stream
-                var privateKey = new RSAParameters();
-                privateKey.Exponent = Convert.FromBase64String(pvtKey.Substring(0, 4));
-                privateKey.Modulus = Convert.FromBase64String(pvtKey.Substring(4));
+                var privateKey = new RSAParameters();                
+                byte[] pvtKeyBuff = Convert.FromBase64String(pvtKey);
+                privateKey.Exponent = Extract(pvtKeyBuff, 0, 3);
+                privateKey.Modulus = Extract(pvtKeyBuff, 3, 256);
+                privateKey.D = Extract(pvtKeyBuff, 259, 256);
+                privateKey.DP = Extract(pvtKeyBuff, 515, 128);
+                privateKey.DQ = Extract(pvtKeyBuff, 643, 128);
+                privateKey.P = Extract(pvtKeyBuff, 771, 128);
+                privateKey.Q = Extract(pvtKeyBuff, 899, 128);
+                privateKey.InverseQ = Extract(pvtKeyBuff, 1027, 128);
+                // import private key
+                csp.ImportParameters(privateKey);
 
-                // decrypt header
-                // first copy internal block inside another buffer
-                int headerSize = ActiveDataHeaderSize();
-                byte[] subBuffer = new byte[headerSize - 7];
-                Array.Copy(rawActiveDataHeader, 4, subBuffer, 0, subBuffer.Length);
-                var clearHeader = csp.Decrypt(subBuffer, false);
-                // copy back the buffer into original
-                Array.Copy(clearHeader, 0, rawActiveDataHeader, 4, clearHeader.Length);
-                // convert back again into ActiveDataHeader
-                ActiveDataHeader adhDecrypted = byteArrayToActiveDataHeader(rawActiveDataHeader);
-
-                // skip any extended header
-                long startPos = headerSize;
-                while(adhDecrypted.nextHeaderLen!=0)
-                {
-                    startPos += adhDecrypted.nextHeaderLen;
-                }
-
-                // read guard header
-                byte[] rawActiveDataGuardHeader10 = readRaw(e.FileName, ActiveDataGuardHeader10Size(), startPos);
+                // extract symmetric key
+                byte[] symmetricKey = csp.Decrypt(adh.symmetricKey, false);
+                                
+                // read guard header (32 bytes padded
+                byte[] rawActiveDataGuardHeader10 = readRaw(e.FileName, 32, rawActiveDataHeader.Length);
                 // decrypt guard header with symmetric key
                 var crypto = new AesCryptographyService();
-                byte[] clearActiveDataGuardHeader10 = crypto.Decrypt(rawActiveDataGuardHeader10, adhDecrypted.symmetricKey, iv);
+                byte[] clearActiveDataGuardHeader10 = crypto.Decrypt(rawActiveDataGuardHeader10, symmetricKey, iv);
                 ActiveDataGuardHeader10 adgh10 = byteArrayToActiveDataGuardHeader10(clearActiveDataGuardHeader10);
 
                 // do check on expire date
                 if(adgh10.expireDate!=0 && adgh10.expireDate<DateTime.Now.Ticks)
                 {
-                    ss.WriteString("EXPIRED");
+                    ss.WriteString("DATE_EXPIRED");
                     pipeClient.Close();
                     pipeClient.Dispose();
 
@@ -379,15 +374,12 @@ namespace ADService
                 {
                     if (adgh10.counter == 0)
                     {
-                        ss.WriteString("EXPIRED");
+                        ss.WriteString("COUNTER_EXPIRED");
                         pipeClient.Close();
                         pipeClient.Dispose();
 
                         e.ProcessRequest = false;
-                        unchecked
-                        {
-                            e.ResultCode = (int)ERROR_AD_EXPIRED;
-                        }
+                        e.ResultCode = ERROR_ACCESS_DENIED;                                               
                         return;
                     }
                     else
@@ -401,9 +393,9 @@ namespace ADService
                 // back to bytes
                 clearActiveDataGuardHeader10 = ActiveDataGuardHeader10ToBytes(adgh10);
                 // encrypt back using symmetric key
-                rawActiveDataGuardHeader10 = crypto.Encrypt(clearActiveDataGuardHeader10, adhDecrypted.symmetricKey, iv);
+                rawActiveDataGuardHeader10 = crypto.Encrypt(clearActiveDataGuardHeader10, symmetricKey, iv);
                 // write back to file
-                writeRaw(e.FileName, rawActiveDataGuardHeader10, startPos);
+                writeRaw(e.FileName, rawActiveDataGuardHeader10, ActiveDataHeaderSize());
 
                 // message back to client
                 ss.WriteString("OK");
@@ -588,9 +580,9 @@ namespace ADService
             if (process.EndsWith("ADEDITOR.EXE"))
             {
                 // compute file hash to verify origin of app
-                string hash = computeFileHash(process);
+                //string hash = computeFileHash(process);
                 // no error and same hash
-                if(hash==ADEDITOR_HASH) 
+                //if(hash==ADEDITOR_HASH) 
                     return true;
             }
 
@@ -619,6 +611,13 @@ namespace ADService
         private bool isAlternateDataStream(string filename)
         {
             return (filename.ToUpper().EndsWith(".ZONE.IDENTIFIER"));
+        }
+
+        private byte[] Extract(byte[] source, int start, int len)
+        {
+            byte[] b = new byte[len];
+            Array.Copy(source, start, b, 0, len);
+            return b;
         }
 
         private string askForKey(string filename)

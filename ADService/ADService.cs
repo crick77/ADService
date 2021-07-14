@@ -30,6 +30,7 @@ namespace ADService
         private const int ERROR_INVALID_HANDLE = 6;
         private const int ERROR_BAD_FORMAT = 11;
         private const uint ERROR_PRIVILEGE_NOT_HELD = 1314;
+        private const int ERROR_INVALID_PARAMETER = 0x57;
         private const uint ERROR_AD_EXPIRED = 2222; //0xA007052E;                
         // Useful constants        
         private const string ACTIVEDATA_EXTENSION = ".ACTIVEDATA";
@@ -331,7 +332,7 @@ namespace ADService
                 var csp = new RSACryptoServiceProvider(2048);
 
                 //get the object back from the stream
-                var privateKey = new RSAParameters();                
+                /*var privateKey = new RSAParameters();                
                 byte[] pvtKeyBuff = Convert.FromBase64String(pvtKey);
                 privateKey.Exponent = Extract(pvtKeyBuff, 0, 3);
                 privateKey.Modulus = Extract(pvtKeyBuff, 3, 256);
@@ -342,63 +343,84 @@ namespace ADService
                 privateKey.Q = Extract(pvtKeyBuff, 899, 128);
                 privateKey.InverseQ = Extract(pvtKeyBuff, 1027, 128);
                 // import private key
+                csp.ImportParameters(privateKey);*/
+
+                //get a stream from the string
+                var sr = new System.IO.StringReader(pvtKey);
+                //we need a deserializer
+                var xs = new System.Xml.Serialization.XmlSerializer(typeof(RSAParameters));
+                var privateKey = (RSAParameters)xs.Deserialize(sr);
                 csp.ImportParameters(privateKey);
 
-                // extract symmetric key
-                byte[] symmetricKey = csp.Decrypt(adh.symmetricKey, false);
-                                
-                // read guard header (32 bytes padded
-                byte[] rawActiveDataGuardHeader10 = readRaw(e.FileName, 32, rawActiveDataHeader.Length);
-                // decrypt guard header with symmetric key
-                var crypto = new AesCryptographyService();
-                byte[] clearActiveDataGuardHeader10 = crypto.Decrypt(rawActiveDataGuardHeader10, symmetricKey, iv);
-                ActiveDataGuardHeader10 adgh10 = byteArrayToActiveDataGuardHeader10(clearActiveDataGuardHeader10);
-
-                // do check on expire date
-                if(adgh10.expireDate!=0 && adgh10.expireDate<DateTime.Now.Ticks)
+                try
                 {
-                    ss.WriteString("DATE_EXPIRED");
-                    pipeClient.Close();
-                    pipeClient.Dispose();
+                    // extract symmetric key
+                    byte[] symmetricKey = csp.Decrypt(adh.symmetricKey, false);
 
-                    e.ProcessRequest = false;
-                    unchecked  
-                    {  
-                        e.ResultCode = (int)ERROR_AD_EXPIRED;
-                    }
-                    return;
-                }
+                    // read guard header (32 bytes padded
+                    byte[] rawActiveDataGuardHeader10 = readRaw(e.FileName, 32, rawActiveDataHeader.Length);
+                    // decrypt guard header with symmetric key
+                    var crypto = new AesCryptographyService();
+                    byte[] clearActiveDataGuardHeader10 = crypto.Decrypt(rawActiveDataGuardHeader10, symmetricKey, iv);
+                    ActiveDataGuardHeader10 adgh10 = byteArrayToActiveDataGuardHeader10(clearActiveDataGuardHeader10);
 
-                // do checks on open counter
-                if (adgh10.counter != -1)
-                {
-                    if (adgh10.counter == 0)
+                    // do check on expire date
+                    if (adgh10.expireDate != 0 && adgh10.expireDate < DateTime.Now.Ticks)
                     {
-                        ss.WriteString("COUNTER_EXPIRED");
+                        ss.WriteString("DATE_EXPIRED");
                         pipeClient.Close();
                         pipeClient.Dispose();
 
                         e.ProcessRequest = false;
-                        e.ResultCode = ERROR_ACCESS_DENIED;                                               
+                        unchecked
+                        {
+                            e.ResultCode = (int)ERROR_AD_EXPIRED;
+                        }
                         return;
                     }
-                    else
+
+                    // do checks on open counter
+                    if (adgh10.counter != -1)
                     {
-                        adgh10.counter--;
+                        if (adgh10.counter == 0)
+                        {
+                            ss.WriteString("COUNTER_EXPIRED");
+                            pipeClient.Close();
+                            pipeClient.Dispose();
+
+                            e.ProcessRequest = false;
+                            e.ResultCode = ERROR_ACCESS_DENIED;
+                            return;
+                        }
+                        else
+                        {
+                            adgh10.counter--;
+                        }
                     }
+
+                    // update header
+                    adgh10.openCount++;
+                    // back to bytes
+                    clearActiveDataGuardHeader10 = ActiveDataGuardHeader10ToBytes(adgh10);
+                    // encrypt back using symmetric key
+                    rawActiveDataGuardHeader10 = crypto.Encrypt(clearActiveDataGuardHeader10, symmetricKey, iv);
+                    // write back to file
+                    writeRaw(e.FileName, rawActiveDataGuardHeader10, ActiveDataHeaderSize());
+
+                    // message back to client
+                    ss.WriteString("OK");
                 }
+                catch(CryptographicException)
+                {
+                    Console.WriteLine("Process " + process + " cannot read " + fname + "due to wrong private key.");
+                    evLog.WriteEntry("Process " + process + " cannot read " + fname + "due to wrong private key.");
+                    ss.WriteString("WRONG_KEY");
+                    pipeClient.Close();
+                    pipeClient.Dispose();
 
-                // update header
-                adgh10.openCount++;
-                // back to bytes
-                clearActiveDataGuardHeader10 = ActiveDataGuardHeader10ToBytes(adgh10);
-                // encrypt back using symmetric key
-                rawActiveDataGuardHeader10 = crypto.Encrypt(clearActiveDataGuardHeader10, symmetricKey, iv);
-                // write back to file
-                writeRaw(e.FileName, rawActiveDataGuardHeader10, ActiveDataHeaderSize());
-
-                // message back to client
-                ss.WriteString("OK");
+                    e.ProcessRequest = false;
+                    e.ResultCode = ERROR_INVALID_PARAMETER;
+                }
 
                 // close the pipe
                 pipeClient.Close();

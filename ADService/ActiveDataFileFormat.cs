@@ -35,7 +35,7 @@ namespace adEditor
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
         public byte[] symmetricKey;
 
-        // This is the SHA1 of only metadata fields with this and "dataHash" fields set to 0
+        // This is the SHA1 of only metadata fields with this field set to 0
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
         public byte[] headerHash;
 
@@ -92,7 +92,7 @@ namespace adEditor
         [MarshalAs(UnmanagedType.U2)]
         public short flag;
 
-        // This is the SHA1 of WHOLE data block - means ALL data fields togheter (ActiveDataFields structure + unencrypted data)
+        // This is the SHA1 of this data block
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
         public byte[] dataHash;
 

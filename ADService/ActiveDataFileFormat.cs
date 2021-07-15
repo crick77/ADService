@@ -66,7 +66,7 @@ namespace adEditor
         [MarshalAs(UnmanagedType.U4)]
         public int openCount;
 
-        [MarshalAs(UnmanagedType.U4)]
+        [MarshalAs(UnmanagedType.I4)]
         public int counter;
 
         [MarshalAs(UnmanagedType.U8)]

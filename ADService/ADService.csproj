@@ -49,9 +49,6 @@
     <Reference Include="Microsoft.Win32.Registry, Version=5.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
       <HintPath>..\packages\Microsoft.Win32.Registry.5.0.0\lib\net461\Microsoft.Win32.Registry.dll</HintPath>
     </Reference>
-    <Reference Include="MintPlayer.PlatformBrowser, Version=2.2.1.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>..\packages\MintPlayer.PlatformBrowser.2.2.1\lib\netstandard2.0\MintPlayer.PlatformBrowser.dll</HintPath>
-    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Configuration.Install" />
     <Reference Include="System.Core" />
@@ -74,7 +71,6 @@
   <ItemGroup>
     <Compile Include="ActiveDataFileFormat.cs" />
     <Compile Include="Extensions.cs" />
-    <Compile Include="PlatformMail.cs" />
     <Compile Include="ProjectInstaller.cs">
       <SubType>Component</SubType>
     </Compile>

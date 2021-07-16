@@ -74,21 +74,7 @@ namespace ADService
         private const uint FILE_FLAG_WRITE_THROUGH = 0x80000000;
         // Crypto data
         private static readonly byte[] iv = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-
-        // Kernel api import
-        /*        [DllImport("kernel32.dll")]
-                static extern bool GetFileSizeEx(IntPtr hFile, out long lpFileSize);
-                [DllImport("kernel32.dll")]
-                static extern bool CloseHandle(IntPtr hFile);
-                [DllImport("kernel32.dll", BestFitMapping = true, CharSet = CharSet.Ansi, SetLastError = true)]
-                [return: MarshalAs(UnmanagedType.Bool)]
-                public static extern bool ReadFile(IntPtr hFile, byte[] lpbuffer, UInt32 nNumberofBytesToRead, out UInt32 lpNumberofBytesRead, IntPtr lpOverlapped);
-                [DllImport("kernel32.dll")]
-                static extern bool WriteFile(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite, out uint lpNumberOfBytesWritten, [In] ref System.Threading.NativeOverlapped lpOverlapped);
-                [DllImport("kernel32.dll")]
-                static extern bool SetFilePointerEx(IntPtr hFile, long liDistanceToMove, IntPtr lpNewFilePointer, uint dwMoveMethod);
-        */
-
+        
         /*
          * Constructor
          */
@@ -96,6 +82,7 @@ namespace ADService
         {
             InitializeComponent();
 
+            // create log source
             ((ISupportInitialize)(this.EventLog)).BeginInit();
             if (!EventLog.SourceExists(SERVICE_NAME))
             {                
@@ -131,7 +118,9 @@ namespace ADService
             }
             else
             {
+#if NOSERVICE
                 Console.WriteLine("ADService: driver not installed.");
+#endif
                 evLog.WriteEntry("ADService: driver not installed.");
                 throw new Exception();
             }
@@ -150,7 +139,9 @@ namespace ADService
             mFilter.FileFlushingBehavior = 0;
 
             evLog.WriteEntry("Service started. " + driveStatus + " Active:" + mFilter.Active);
-            Console.WriteLine("Service started. " + driveStatus + " Active:" + mFilter.Active);           
+#if NOSERVICE
+            Console.WriteLine("Service started. " + driveStatus + " Active:" + mFilter.Active);
+#endif
         }
 
         /*
@@ -163,13 +154,17 @@ namespace ADService
                 // stop the filter and dispose it
                 mFilter.StopFilter(false);
                 mFilter.Dispose();
-                
+
+#if NOSERVICE
                 Console.WriteLine("ADService: Service stopped.");
+#endif
                 evLog.WriteEntry("ADService: Service stopped.");                                
             }
             catch (CBFSFilterException err)
             {
+#if NOSERVICE
                 Console.WriteLine("ADService: Stop error: " + err.Message);
+#endif
                 evLog.WriteEntry("ADService: Stop error: " + err.Message);
             }
             // dispose log
@@ -181,10 +176,12 @@ namespace ADService
          */
         protected override void OnShutdown()
         {
+#if NOSERVICE
             Console.WriteLine("ADService: System shutdown, stopping.");
+#endif
             evLog.WriteEntry("ADService: System shutdown, stopping.");
-            //this.CanStop = true;
-            //base.OnShutdown();
+            this.CanStop = true;
+            base.OnShutdown();
         }
 
 #if NOSERVICE
@@ -225,7 +222,9 @@ namespace ADService
                 // no...block!
                 e.ProcessRequest = true;
                 e.ResultCode = 0;
+#if NOSERVICE
                 Console.WriteLine("Process " + process + " tried to rename/move adlist file " + fname + " to " + newfname + ". Request allowed.");
+#endif
                 evLog.WriteEntry("Process " + process + " tried to rename/move adlist file " + fname + " to " + newfname + ". Request allowed.");
             }
             else
@@ -233,7 +232,9 @@ namespace ADService
                 // yes...allow!
                 e.ProcessRequest = false;
                 e.ResultCode = ERROR_ACCESS_DENIED;
+#if NOSERVICE
                 Console.WriteLine("Process " + process + " tried to rename/move adlist file " + fname + " to " + newfname + ". Request blocked.");
+#endif
                 evLog.WriteEntry("Process " + process + " tried to rename/move adlist file " + fname + " to " + newfname + ". Request blocked.");
             }
         }
@@ -253,15 +254,13 @@ namespace ADService
         {
             string process = mFilter.GetOriginatorProcessName().ToUpper();
             string fname = e.FileName.ToUpper();
-
-            // Reset return codes
-            e.ProcessRequest = true;
-            e.ResultCode = 0;
-
+           
             // AlternateDataStream (ADS) are allowed
             if (isAlternateDataStream(fname))
             {
+#if NOSERVICE
                 Console.WriteLine("Process "+process+" is allowed to read ADS for file " + fname);
+#endif
                 evLog.WriteEntry("Process " + process + " is allowed to read ADS for file " + fname);
                 return;
             }
@@ -279,22 +278,21 @@ namespace ADService
                     {
                         e.ProcessRequest = false;
                         e.ResultCode = ERROR_BAD_FORMAT;
+#if NOSERVICE
                         Console.WriteLine("Reading of file " + fname + " failed. It's not an activedata.");
+#endif
                         evLog.WriteEntry("Reading of file " + fname + " failed. It's not an activedata.");
 
                         return;
-                    }
-                    else
-                    {
-                        // debug purposes...remove
-                        Console.WriteLine("File " + fname + " IS AN ACTIVEDATA!!!");
                     }
                 }
                 else
                 {
                     e.ProcessRequest = false;
                     e.ResultCode = ERROR_BAD_FORMAT;
+#if NOSERVICE
                     Console.WriteLine("Reading of activedata header of file " + fname + " failed.");
+#endif
                     evLog.WriteEntry("Reading of activedata header of file " + fname + " failed.");
 
                     return;
@@ -330,21 +328,7 @@ namespace ADService
               
                 // ask to app for key to app (maybe expand code here to interact with desktop app later (eg. errors)
                 var csp = new RSACryptoServiceProvider(2048);
-
-                //get the object back from the stream
-                /*var privateKey = new RSAParameters();                
-                byte[] pvtKeyBuff = Convert.FromBase64String(pvtKey);
-                privateKey.Exponent = Extract(pvtKeyBuff, 0, 3);
-                privateKey.Modulus = Extract(pvtKeyBuff, 3, 256);
-                privateKey.D = Extract(pvtKeyBuff, 259, 256);
-                privateKey.DP = Extract(pvtKeyBuff, 515, 128);
-                privateKey.DQ = Extract(pvtKeyBuff, 643, 128);
-                privateKey.P = Extract(pvtKeyBuff, 771, 128);
-                privateKey.Q = Extract(pvtKeyBuff, 899, 128);
-                privateKey.InverseQ = Extract(pvtKeyBuff, 1027, 128);
-                // import private key
-                csp.ImportParameters(privateKey);*/
-
+                
                 //get a stream from the string
                 var sr = new System.IO.StringReader(pvtKey);
                 //we need a deserializer
@@ -412,7 +396,9 @@ namespace ADService
                 }
                 catch(CryptographicException)
                 {
+#if NOSERVICE
                     Console.WriteLine("Process " + process + " cannot read " + fname + "due to wrong private key.");
+#endif
                     evLog.WriteEntry("Process " + process + " cannot read " + fname + "due to wrong private key.");
                     ss.WriteString("WRONG_KEY");
                     pipeClient.Close();
@@ -428,6 +414,11 @@ namespace ADService
             }
             else
             {
+#if NOSERVICE
+                Console.WriteLine("Process " + process + " cannot read " + fname + ": unauthorized app.");
+#endif
+                evLog.WriteEntry("Process " + process + " cannot read " + fname + ": unauthorized app.");
+
                 e.ProcessRequest = false;
                 e.ResultCode = ERROR_ACCESS_DENIED;
             }                                                                     
@@ -456,8 +447,12 @@ namespace ADService
             }
             catch (Exception ioe)
             {
-                Console.WriteLine("readheader IOE: " + ioe.ToString());
+#if NOSERVICE
+                Console.WriteLine("File "+fname+", readheader IOE: " + ioe.ToString());
+#endif
+                evLog.WriteEntry("File " + fname + ", readheader IOE: " + ioe.ToString());
             }
+
             return null;
         }
 
@@ -522,38 +517,7 @@ namespace ADService
 
             return myBuffer;
         }
-
-
-        //private bool writeActiveDataHeader(string fname, ActiveDataFile adf)
-        //{
-        //    // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
-        //    CBFSFilterStream s = mFilter.CreateFileDirectAsStream(fname, false, FILE_WRITE_DATA, OPEN_EXISTING, (int)FILE_ATTRIBUTE_NORMAL);
-        //    try
-        //    {
-        //        int length = Marshal.SizeOf(adf);
-        //        IntPtr ptr = Marshal.AllocHGlobal(length);
-        //        byte[] outBuffer = new byte[length];
-
-        //        Marshal.StructureToPtr(adf, ptr, true);
-        //        Marshal.Copy(ptr, outBuffer, 0, length);
-        //        Marshal.FreeHGlobal(ptr);
-
-        //        long currentPos = s.Position;
-        //        s.Seek(0, SeekOrigin.Begin);
-        //        s.Write(outBuffer, 0, outBuffer.Length);
-        //        s.Seek(currentPos, SeekOrigin.Begin);
-        //        s.Close();
-
-        //        return true;
-        //    }
-        //    catch (Exception ioe)
-        //    {
-        //        Console.WriteLine("readheader IOE: " + ioe.ToString());
-        //        return false;
-        //    }            
-        //}
-
-
+     
         private bool writeRaw(string fname, byte[] buffer, long startPos)
         {
             // Open the file bypassing filter stack...directly to kernel (parameters MUST be fixed later!)
@@ -570,7 +534,10 @@ namespace ADService
             }
             catch (Exception ioe)
             {
-                Console.WriteLine("writebuffer IOE: " + ioe.ToString());
+#if NOSERVICE
+                Console.WriteLine("File " + fname + ", writebuffer IOE: " + ioe.ToString());
+#endif
+                evLog.WriteEntry("File " + fname + ", writebuffer IOE: " + ioe.ToString());
                 return false;
             }
         }
@@ -588,8 +555,12 @@ namespace ADService
                     return sb.ToString();
                 }
             }
-            catch(Exception)
+            catch(Exception ex)
             {
+#if NOSERVICE
+                Console.WriteLine("File " + fname + ", cannot computer hash: " + ex.ToString());
+#endif
+                evLog.WriteEntry("File " + fname + ", cannot computer has: " + ex.ToString());
                 return null;
             }
         }
@@ -602,7 +573,7 @@ namespace ADService
             if (process.EndsWith("ADEDITOR.EXE"))
             {
                 // compute file hash to verify origin of app
-                //string hash = computeFileHash(process);
+                string hash = computeFileHash(process);
                 // no error and same hash
                 //if(hash==ADEDITOR_HASH) 
                     return true;
@@ -640,34 +611,6 @@ namespace ADService
             byte[] b = new byte[len];
             Array.Copy(source, start, b, 0, len);
             return b;
-        }
-
-        private string askForKey(string filename)
-        {
-            var pipeClient =
-                    new NamedPipeClientStream(".", "ad_pipe",
-                        PipeDirection.InOut, PipeOptions.None,
-                        TokenImpersonationLevel.Impersonation);
-            pipeClient.Connect();
-
-            var ss = new StreamString(pipeClient);
-            string key = null;
-            // Validate the server's signature string.
-            if (ss.ReadString() == "HLO!")
-            {
-                // The client security token is sent with the first write.
-                // Send the name of the file whose contents are returned
-                // by the server.
-                ss.WriteString(filename);
-
-                // Print the file to the screen.
-                key = ss.ReadString();
-            }
-            
-            pipeClient.Close();
-            pipeClient.Dispose();
-
-            return key;
         }
     }
 
